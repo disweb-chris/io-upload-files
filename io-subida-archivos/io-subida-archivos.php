@@ -380,6 +380,30 @@ function io_drive_trash_file( $file_id ) {
 	);
 }
 
+/**
+ * Traduce el código de error de subida de PHP ($_FILES[...]['error'])
+ * a un mensaje entendible, para que el cliente (y nosotros) sepamos
+ * exactamente por qué falló en vez de un "falló" genérico.
+ *
+ * @param int $error_code
+ * @return string
+ */
+function io_drive_upload_error_message( $error_code ) {
+	switch ( $error_code ) {
+		case UPLOAD_ERR_INI_SIZE:
+		case UPLOAD_ERR_FORM_SIZE:
+			return 'El archivo supera el límite de tamaño configurado en el servidor de hosting (upload_max_filesize/post_max_size), no el límite del plugin. Hay que pedirle al hosting que lo aumente.';
+		case UPLOAD_ERR_PARTIAL:
+			return 'La subida se interrumpió a mitad de camino. Probá de nuevo con mejor conexión.';
+		case UPLOAD_ERR_NO_TMP_DIR:
+		case UPLOAD_ERR_CANT_WRITE:
+		case UPLOAD_ERR_EXTENSION:
+			return 'Error del servidor al procesar el archivo. Contactá al hosting.';
+		default:
+			return 'No se recibió ningún archivo válido.';
+	}
+}
+
 /* ============================================================
  * 4. VALIDACIÓN DE PEDIDO
  * ============================================================ */
@@ -461,11 +485,31 @@ add_action( 'rest_api_init', function () {
 				}
 
 				$files = $req->get_file_params();
-				if ( empty( $files['file'] ) || $files['file']['error'] !== UPLOAD_ERR_OK ) {
+
+				if ( empty( $files['file'] ) ) {
+					// Si el archivo pesa más que post_max_size, PHP descarta TODO el
+					// POST antes de que exista $_FILES — no hay código de error que leer,
+					// hay que inferirlo comparando el Content-Length contra el límite.
+					$content_length = isset( $_SERVER['CONTENT_LENGTH'] ) ? (int) $_SERVER['CONTENT_LENGTH'] : 0;
+					$post_max_bytes = wp_convert_hr_to_bytes( ini_get( 'post_max_size' ) );
+					if ( $post_max_bytes > 0 && $content_length > $post_max_bytes ) {
+						return new WP_Error(
+							'io_drive_post_max_size',
+							sprintf(
+								'El archivo es demasiado pesado para el servidor (límite actual del hosting: %s). Pedile al hosting que aumente post_max_size y upload_max_filesize.',
+								size_format( $post_max_bytes )
+							),
+							array( 'status' => 400 )
+						);
+					}
 					return new WP_Error( 'io_drive_no_file', 'No se recibió ningún archivo válido.', array( 'status' => 400 ) );
 				}
 
 				$file = $files['file'];
+
+				if ( $file['error'] !== UPLOAD_ERR_OK ) {
+					return new WP_Error( 'io_drive_upload_error', io_drive_upload_error_message( $file['error'] ), array( 'status' => 400 ) );
+				}
 
 				if ( $file['size'] > IO_DRIVE_MAX_FILE_SIZE ) {
 					return new WP_Error( 'io_drive_too_big', 'El archivo supera el tamaño máximo permitido (50MB).', array( 'status' => 400 ) );
@@ -876,13 +920,20 @@ function io_drive_render_widget( $order_id ) {
 						if (xhr.status >= 200 && xhr.status < 300) {
 							subidos++;
 						} else {
-							errores.push(file.name);
+							var detalle = '';
+							try {
+								var data = JSON.parse(xhr.responseText);
+								if (data && data.message) detalle = data.message;
+							} catch (e) {}
+							errores.push(file.name + (detalle ? ' — ' + detalle : ''));
+							console.error('io-drive: fallo al subir "' + file.name + '" (' + xhr.status + '):', xhr.responseText);
 						}
 						subirSiguiente();
 					};
 
 					xhr.onerror = function(){
-						errores.push(file.name);
+						errores.push(file.name + ' — error de conexión');
+						console.error('io-drive: error de red al subir "' + file.name + '"');
 						subirSiguiente();
 					};
 
