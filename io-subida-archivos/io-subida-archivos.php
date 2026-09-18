@@ -861,9 +861,14 @@ function io_drive_render_widget( $order_id ) {
 
 			function extensionValida(nombre){
 				var ext = nombre.split('.').pop().toLowerCase();
-				return widget.getAttribute('data-rest-url') && ext.length > 0 && (
-					',pdf,jpg,jpeg,png,ai,psd,eps,svg,zip,cdr,tif,tiff,'.indexOf(',' + ext + ',') !== -1
-				);
+				if (!ext) return false;
+				// Tomamos la lista directamente del atributo "accept" del input
+				// (generado del lado del servidor) para no mantener la lista
+				// de extensiones duplicada y evitar que se desincronicen.
+				var aceptados = (input.getAttribute('accept') || '').split(',').map(function(s){
+					return s.trim().replace(/^\./, '').toLowerCase();
+				});
+				return aceptados.indexOf(ext) !== -1;
 			}
 
 			function subirArchivos(files){
